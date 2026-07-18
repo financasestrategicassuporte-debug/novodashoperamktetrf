@@ -153,7 +153,7 @@ async function fetchMetaInsights({ since, until, level }) {
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=60');
+  res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=15');
   try {
     const csvRes = await fetchCsv(CSV_URL);
     if (!csvRes.ok) throw new Error(`Falha ao buscar a planilha (HTTP ${csvRes.status})`);
