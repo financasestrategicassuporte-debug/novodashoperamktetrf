@@ -152,6 +152,37 @@ async function fetchMetaInsights({ since, until, level }) {
   return { ok: true, rows: json.data || [] };
 }
 
+async function fetchMetaDailySpend({ since, until }) {
+  if (!META_ACCESS_TOKEN || !META_AD_ACCOUNT_ID) return { ok: false, rows: [] };
+  const acct = META_AD_ACCOUNT_ID.startsWith('act_') ? META_AD_ACCOUNT_ID : `act_${META_AD_ACCOUNT_ID}`;
+  const params = new URLSearchParams({
+    level: 'account', fields: 'spend',
+    time_range: JSON.stringify({ since, until }),
+    time_increment: '1', limit: '200',
+    access_token: META_ACCESS_TOKEN,
+  });
+  const url = `https://graph.facebook.com/${META_API_VERSION}/${acct}/insights?${params}`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (!res.ok || json.error) return { ok: false, rows: [] };
+  return { ok: true, rows: json.data || [] };
+}
+
+function enumerateDays(start, end) {
+  const days = [];
+  let d = new Date(start);
+  while (d < end) { days.push(toISODate(d)); d = new Date(d.getTime() + 86400000); }
+  return days;
+}
+function dayLabelOf(iso) {
+  const [, m, d] = iso.split('-');
+  return `${m}-${d}`;
+}
+function compactNumber(n) {
+  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`;
+  return String(Math.round(n));
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=15');
   try {
@@ -177,6 +208,8 @@ export default async function handler(req, res) {
     const window = range ? rangeToWindow(range) : null;
 
     const leads = [];
+    const leadsPerDayMap = new Map(); // iso date -> { naoQualif, qualif, ultra }
+    const hourBuckets = { madrugada: 0, manha: 0, tarde: 0, noite: 0 };
     dataRows.forEach((r, i) => {
       const nome = idx.nome >= 0 ? (r[idx.nome] || '').trim() : '';
       if (!nome) return;
@@ -186,6 +219,21 @@ export default async function handler(req, res) {
       const faturamentoRaw = idx.faturamento >= 0 ? (r[idx.faturamento] || '').trim() : '';
       const faturamentoValor = parseFaturamento(faturamentoRaw);
       const q = qualificationFor(faturamentoValor);
+
+      if (parsedDate) {
+        const iso = toISODate(parsedDate);
+        if (!leadsPerDayMap.has(iso)) leadsPerDayMap.set(iso, { naoQualif: 0, qualif: 0, ultra: 0 });
+        const bucket = leadsPerDayMap.get(iso);
+        if (faturamentoValor != null && faturamentoValor >= 100000) bucket.ultra += 1;
+        else if (faturamentoValor != null && faturamentoValor >= 50000) bucket.qualif += 1;
+        else bucket.naoQualif += 1;
+
+        const h = parsedDate.getHours();
+        if (h < 8) hourBuckets.madrugada += 1;
+        else if (h < 12) hourBuckets.manha += 1;
+        else if (h < 18) hourBuckets.tarde += 1;
+        else hourBuckets.noite += 1;
+      }
 
       leads.push({
         nome, initials: initialsOf(nome), avatarBg: AVATAR_COLORS[i % AVATAR_COLORS.length],
@@ -202,9 +250,10 @@ export default async function handler(req, res) {
     const since = toISODate(metaWindow.start);
     const until = toISODate(new Date(metaWindow.end.getTime() - 86400000));
 
-    const [campaignInsights, adInsights] = await Promise.all([
+    const [campaignInsights, adInsights, dailySpendInsights] = await Promise.all([
       fetchMetaInsights({ since, until, level: 'campaign' }),
       fetchMetaInsights({ since, until, level: 'ad' }),
+      fetchMetaDailySpend({ since, until }),
     ]);
     const metaOk = campaignInsights.ok;
 
@@ -307,6 +356,9 @@ export default async function handler(req, res) {
     const leadsQualificados = leads.filter((l) => l._fat != null && l._fat >= 50000).length;
     const kpis = {
       investimento: metaOk ? brl(totalSpend) : '-',
+      investimentoValor: metaOk ? totalSpend : 0,
+      impressoes: metaOk ? totalImpressions : null,
+      cliques: metaOk ? totalClicks : null,
       leads: totalLeads,
       leadsQualificados,
       cpl: metaOk && totalLeads ? brl(totalSpend / totalLeads) : '-',
@@ -317,8 +369,32 @@ export default async function handler(req, res) {
       taxaConexao: null,
     };
 
+    const dayLabels = enumerateDays(metaWindow.start, metaWindow.end);
+    const spendByDate = new Map();
+    if (dailySpendInsights.ok) {
+      dailySpendInsights.rows.forEach((row) => {
+        spendByDate.set(row.date_start, (spendByDate.get(row.date_start) || 0) + (parseFloat(row.spend || '0') || 0));
+      });
+    }
+    const dailySpend = dayLabels.map((iso) => ({
+      date: iso, label: dayLabelOf(iso), spend: spendByDate.get(iso) || 0,
+    }));
+    const leadsPerDay = dayLabels.map((iso) => {
+      const b = leadsPerDayMap.get(iso) || { naoQualif: 0, qualif: 0, ultra: 0 };
+      return { date: iso, label: dayLabelOf(iso), naoQualif: b.naoQualif, qualif: b.qualif, ultra: b.ultra, total: b.naoQualif + b.qualif + b.ultra };
+    });
+    const hourTotal = hourBuckets.madrugada + hourBuckets.manha + hourBuckets.tarde + hourBuckets.noite;
+    const hourPct = (n) => (hourTotal ? (n / hourTotal) * 100 : 0);
+    const hourlyDistribution = [
+      { key: 'madrugada', label: 'Madrugada / antes 8h', range: '00h-08h', count: hourBuckets.madrugada, pct: hourPct(hourBuckets.madrugada) },
+      { key: 'manha', label: 'Manhã', range: '08h-12h', count: hourBuckets.manha, pct: hourPct(hourBuckets.manha) },
+      { key: 'tarde', label: 'Tarde', range: '12h-18h', count: hourBuckets.tarde, pct: hourPct(hourBuckets.tarde) },
+      { key: 'noite', label: 'Noite', range: '18h-23h', count: hourBuckets.noite, pct: hourPct(hourBuckets.noite) },
+    ];
+
     res.status(200).json({
       kpis, leadsList, creativesList, campaignsList,
+      dailySpend, leadsPerDay, hourlyDistribution,
       meta: { connected: metaOk, error: metaOk ? null : campaignInsights.reason },
       source: 'meta+google-sheets',
       updatedAt: new Date().toISOString(),
