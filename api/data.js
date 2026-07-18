@@ -65,7 +65,7 @@ function parseFaturamento(raw) {
 
 function qualificationFor(value) {
   if (value == null) return { qual: 'Sem dado de faturamento', qualBg: '#f3f4f6', qualColor: '#6b7280' };
-  if (value >= 100000) return { qual: 'Ultra Qualif. (+100k)', qualBg: '#f5f3ff', qualColor: '#7c3aed' };
+  if (value >= 150000) return { qual: 'Ultra Qualif. (+150k)', qualBg: '#f5f3ff', qualColor: '#7c3aed' };
   if (value >= 50000) return { qual: 'Qualificado (+50k)', qualBg: '#eff6ff', qualColor: '#2563eb' };
   if (value >= 30000) return { qual: 'Semi Qualif. (+30k)', qualBg: '#fffbeb', qualColor: '#b45309' };
   return { qual: 'Não Qualificado', qualBg: '#f9fafb', qualColor: '#6b7c72' };
@@ -108,7 +108,7 @@ function toISODate(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-const AVATAR_COLORS = ['#7c3aed', '#2563eb', '#16a34a', '#f59e0b', '#0891b2', '#dc2626'];
+const AVATAR_COLORS = ['#7c3aed', '#2563eb', '16a34a', '#f59e0b', '#0891b2', '#dc2626'];
 function initialsOf(name) {
   if (!name) return '??';
   const parts = name.trim().split(/\s+/).filter(Boolean);
