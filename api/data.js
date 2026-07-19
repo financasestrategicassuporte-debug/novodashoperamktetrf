@@ -138,7 +138,7 @@ async function fetchMetaInsights({ since, until, level }) {
   const acct = META_AD_ACCOUNT_ID.startsWith('act_') ? META_AD_ACCOUNT_ID : `act_${META_AD_ACCOUNT_ID}`;
   const fields = level === 'ad'
     ? 'ad_name,campaign_name,adset_name,spend,impressions,clicks,ctr,cpc,cpm'
-    : 'campaign_name,spend,impressions,clicks,ctr,cpc,cpm';
+    : 'campaign_name,spend,impressions,clicks,inline_link_clicks,ctr,cpc,cpm';
   const params = new URLSearchParams({
     level, fields,
     time_range: JSON.stringify({ since, until }),
@@ -204,8 +204,8 @@ export default async function handler(req, res) {
       area: col('Área'), utmCampaign: col('utm_campaign'), utmContent: col('utm_content'),
     };
 
-    const { range } = req.query || {};
-    const window = range ? rangeToWindow(range) : null;
+    const { range, start: startParam, end: endParam } = req.query || {};
+    const window = (startParam && endParam) ? { start: new Date(startParam + 'T00:00:00'), end: new Date(new Date(endParam + 'T00:00:00').getTime() + 86400000) } : (range ? rangeToWindow(range) : null);
 
     const leads = [];
     const leadsPerDayMap = new Map(); // iso date -> { naoQualif, qualif, ultra }
@@ -265,13 +265,13 @@ export default async function handler(req, res) {
       g.total += 1;
       if (l._fat != null && l._fat >= 50000) g.qualif += 1;
     });
-    let totalSpend = 0, totalImpressions = 0, totalClicks = 0;
+    let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalLinkClicks = 0;
     if (metaOk) {
       campaignInsights.rows.forEach((row) => {
         const spend = parseFloat(row.spend || '0') || 0;
         const impressions = parseInt(row.impressions || '0', 10) || 0;
         const clicks = parseInt(row.clicks || '0', 10) || 0;
-        totalSpend += spend; totalImpressions += impressions; totalClicks += clicks;
+        totalSpend += spend; totalImpressions += impressions; totalClicks += clicks; totalLinkClicks += parseInt(row.inline_link_clicks || '0', 10) || 0;
         let matchedKey = null;
         for (const key of byCampaign.keys()) { if (tagsMatch(key, row.campaign_name)) { matchedKey = key; break; } }
         if (matchedKey) {
@@ -366,7 +366,7 @@ export default async function handler(req, res) {
       ctr: metaOk && totalImpressions ? pct((totalClicks / totalImpressions) * 100) : '-',
       cpc: metaOk && totalClicks ? brl(totalSpend / totalClicks) : '-',
       cpm: metaOk && totalImpressions ? brl((totalSpend / totalImpressions) * 1000) : '-',
-      pageViews: pixelStats.ok ? pixelStats.pageViews : null, connectRate: (pixelStats.ok && totalClicks) ? pct((pixelStats.pageViews / totalClicks) * 100) : '-', txLead: (pixelStats.ok && pixelStats.pageViews) ? pct((totalLeads / pixelStats.pageViews) * 100) : '-',
+      pageViews: pixelStats.ok ? pixelStats.pageViews : null, connectRate: (pixelStats.ok && totalLinkClicks) ? pct((pixelStats.pageViews / totalLinkClicks) * 100) : '-', txLead: (pixelStats.ok && pixelStats.pageViews) ? pct((totalLeads / pixelStats.pageViews) * 100) : '-',
     };
 
     const dayLabels = enumerateDays(metaWindow.start, metaWindow.end);
@@ -395,7 +395,7 @@ export default async function handler(req, res) {
     res.status(200).json({
       kpis, leadsList, creativesList, campaignsList,
       dailySpend, leadsPerDay, hourlyDistribution,
-      meta: { connected: metaOk, error: metaOk ? null : campaignInsights.reason },
+      meta: { connected: metaOk, error: metaOk ? null : campaignInsights.reason }, range: { since, until },
       source: 'meta+google-sheets',
       updatedAt: new Date().toISOString(),
     });
