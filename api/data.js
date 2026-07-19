@@ -14,7 +14,7 @@
 
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_ID = process.env.META_AD_ACCOUNT_ID || '';
-const META_API_VERSION = process.env.META_API_VERSION || 'v20.0';
+const META_API_VERSION = process.env.META_API_VERSION || 'v20.0'; const PIXEL_DATASET_ID = process.env.PIXEL_DATASET_ID || '2170508356765219';
 const SHEET_ID = process.env.SHEET_ID || '1MW_dyf0VOHULceCCtY7FkCR_tLCCkM6YqPY-TQd8fjI';
 const SHEET_GID = process.env.SHEET_GID || '1467696356';
 const CSV_URL = process.env.SHEET_CSV_URL || `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
@@ -168,7 +168,7 @@ async function fetchMetaDailySpend({ since, until }) {
   return { ok: true, rows: json.data || [] };
 }
 
-function enumerateDays(start, end) {
+async function fetchPixelStats({ since, until }) { if (!META_ACCESS_TOKEN) return { ok: false, pageViews: 0, leads: 0 }; const untilD = new Date(`${until}T23:59:59Z`); const now = new Date(); const cappedUntil = untilD > now ? now : untilD; let sinceD = new Date(`${since}T00:00:00Z`); const minAllowed = new Date(cappedUntil.getTime() - 27 * 86400000); if (sinceD < minAllowed) sinceD = minAllowed; const params = new URLSearchParams({ aggregation: 'event', start_time: String(Math.floor(sinceD.getTime() / 1000)), end_time: String(Math.floor(cappedUntil.getTime() / 1000)), access_token: META_ACCESS_TOKEN }); const url = `https://graph.facebook.com/${META_API_VERSION}/${PIXEL_DATASET_ID}/stats?${params}`; try { const res = await fetch(url); const json = await res.json(); if (!res.ok || json.error) return { ok: false, pageViews: 0, leads: 0 }; let pageViews = 0, leadsCount = 0; (json.data || []).forEach((bucket) => { if (bucket.value && typeof bucket.value === 'object' && !Array.isArray(bucket.value)) { pageViews += Number(bucket.value.PageView || 0); leadsCount += Number(bucket.value.Lead || 0); } if (Array.isArray(bucket.data)) { bucket.data.forEach((d) => { if (d.value === 'PageView') pageViews += Number(d.count || 0); if (d.value === 'Lead') leadsCount += Number(d.count || 0); }); } }); return { ok: true, pageViews, leads: leadsCount }; } catch (e) { return { ok: false, pageViews: 0, leads: 0 }; } } function enumerateDays(start, end) {
   const days = [];
   let d = new Date(start);
   while (d < end) { days.push(toISODate(d)); d = new Date(d.getTime() + 86400000); }
@@ -250,10 +250,10 @@ export default async function handler(req, res) {
     const since = toISODate(metaWindow.start);
     const until = toISODate(new Date(metaWindow.end.getTime() - 86400000));
 
-    const [campaignInsights, adInsights, dailySpendInsights] = await Promise.all([
+    const [campaignInsights, adInsights, dailySpendInsights, pixelStats] = await Promise.all([
       fetchMetaInsights({ since, until, level: 'campaign' }),
       fetchMetaInsights({ since, until, level: 'ad' }),
-      fetchMetaDailySpend({ since, until }),
+      fetchMetaDailySpend({ since, until }), fetchPixelStats({ since, until }),
     ]);
     const metaOk = campaignInsights.ok;
 
@@ -366,7 +366,7 @@ export default async function handler(req, res) {
       ctr: metaOk && totalImpressions ? pct((totalClicks / totalImpressions) * 100) : '-',
       cpc: metaOk && totalClicks ? brl(totalSpend / totalClicks) : '-',
       cpm: metaOk && totalImpressions ? brl((totalSpend / totalImpressions) * 1000) : '-',
-      taxaConexao: null,
+      pageViews: pixelStats.ok ? pixelStats.pageViews : null, connectRate: (pixelStats.ok && totalClicks) ? pct((pixelStats.pageViews / totalClicks) * 100) : '-', txLead: (pixelStats.ok && pixelStats.pageViews) ? pct((totalLeads / pixelStats.pageViews) * 100) : '-',
     };
 
     const dayLabels = enumerateDays(metaWindow.start, metaWindow.end);
