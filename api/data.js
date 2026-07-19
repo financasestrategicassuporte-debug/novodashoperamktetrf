@@ -289,7 +289,7 @@ export default async function handler(req, res) {
         const txQualif = g.total ? (g.qualif / g.total) * 100 : 0;
         const ctr = g.impressions ? (g.clicks / g.impressions) * 100 : null;
         const cpc = g.clicks ? g.spend / g.clicks : null;
-        const custoLead = g.total ? g.spend / g.total : null;
+        const custoLead = g.matched && g.total ? g.spend / g.total : null;
         return {
           camp: g.camp, leadsQualif: String(g.qualif),
           leadsQualifBarWidth: `${Math.round((g.qualif / maxQualif) * 100)}%`,
@@ -307,7 +307,7 @@ export default async function handler(req, res) {
     const byContent = new Map();
     leads.forEach((l) => {
       const key = l._content;
-      if (!byContent.has(key)) byContent.set(key, { nome: key, camp: l._camp, leads: 0, qualif: 0, spend: 0, impressions: 0, clicks: 0 });
+      if (!byContent.has(key)) byContent.set(key, { nome: key, camp: l._camp, leads: 0, qualif: 0, spend: 0, impressions: 0, clicks: 0, matched: false });
       const g = byContent.get(key);
       g.leads += 1;
       if (l._fat != null && l._fat >= 50000) g.qualif += 1;
@@ -320,7 +320,7 @@ export default async function handler(req, res) {
         for (const key of byContent.keys()) {
           if (tagsMatch(key, row.ad_name)) {
             const g = byContent.get(key);
-            g.spend += spend; g.impressions += impressions; g.clicks += clicks;
+            g.spend += spend; g.impressions += impressions; g.clicks += clicks; g.matched = true;
             break;
           }
         }
@@ -331,8 +331,8 @@ export default async function handler(req, res) {
       .sort((a, b) => b.qualif - a.qualif || b.leads - a.leads)
       .slice(0, 6)
       .map((g, i) => {
-        const cpl = g.leads ? g.spend / g.leads : null;
-        const cplq = g.qualif ? g.spend / g.qualif : null;
+        const cpl = g.matched && g.leads ? g.spend / g.leads : null;
+        const cplq = g.matched && g.qualif ? g.spend / g.qualif : null;
         const ctr = g.impressions ? (g.clicks / g.impressions) * 100 : null;
         return {
           rank: i + 1, rankBg: rankColors[i] || '#94a3b8',
