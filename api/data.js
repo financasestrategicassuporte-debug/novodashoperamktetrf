@@ -85,7 +85,7 @@ function parseRowDate(raw) {
 }
 
 function rangeToWindow(range) {
-  const now = new Date();
+  const now = new Date(Date.now() - 3 * 60 * 60 * 1000); // Brazil (America/Sao_Paulo, UTC-3) wall-clock "now"
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const today = startOfDay(now);
   const addDays = (d, n) => new Date(d.getTime() + n * 86400000);
