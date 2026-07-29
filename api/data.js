@@ -195,13 +195,25 @@ export default async function handler(req, res) {
     const rows = parseCSV(csvRes.text).filter((r) => r.some((c) => (c || '').trim() !== ''));
     if (!rows.length) throw new Error('Planilha vazia ou sem linhas com dados.');
 
-    const headerIdx = rows.findIndex((r) => r.some((c) => /nome/i.test(c)));
+    const headerIdx = rows.findIndex((r) => r.some((c) => /nome|name/i.test(c)));
     const header = headerIdx >= 0 ? rows[headerIdx] : rows[0];
     const dataRows = rows.slice((headerIdx >= 0 ? headerIdx : 0) + 1);
-    const col = (name) => header.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
+    const colAny = (...names) => {
+      for (const name of names) {
+        const target = name.toLowerCase();
+        const found = header.findIndex((h) => h.trim().toLowerCase() === target);
+        if (found >= 0) return found;
+      }
+      for (const name of names) {
+        const target = name.toLowerCase();
+        const found = header.findIndex((h) => h.trim().toLowerCase().includes(target));
+        if (found >= 0) return found;
+      }
+      return -1;
+    };
     const idx = {
-      data: col('Data/Hora'), nome: col('Nome'), faturamento: col('Faturamento'),
-      area: col('Área'), utmCampaign: col('utm_campaign'), utmContent: col('utm_content'),
+      data: colAny('Data/Hora'), nome: colAny('Nome', 'First Name', 'Name'), faturamento: colAny('Faturamento', 'Faixa de faturamento Mensal', 'Faixa de faturamento'),
+      area: colAny('Área', 'Area'), utmCampaign: colAny('utm_campaign'), utmContent: colAny('utm_content'),
     };
 
     const { range, start: startParam, end: endParam } = req.query || {};
