@@ -93,6 +93,104 @@ function brl(n) {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
 }
 
+// ---------- Planilha de captação (Google Sheets CSV) — pra casar venda -> criativo ----------
+const SHEET_ID = process.env.SHEET_ID || '1MW_dyf0VOHULceCCtY7FkCR_tLCCkM6YqPY-TQd8fjI';
+const SHEET_GID = process.env.SHEET_GID || '1467696356';
+const SHEET_CSV_URL = process.env.SHEET_CSV_URL || `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c === '\r') { /* ignora */ }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// Chave canônica de telefone para casar registros: DDD + últimos 8 dígitos
+// (ignora o "9" do celular e o código do país, que variam entre as fontes).
+function phoneKey(raw) {
+  if (!raw) return null;
+  let s = String(raw).split(/[\/,;]/)[0].trim();
+  if (/^\+(?!55)/.test(s) || /^00(?!55)/.test(s)) return null;
+  let d = s.replace(/\D/g, '');
+  if (d.startsWith('55') && d.length > 11) d = d.slice(2);
+  if (d.length < 10) return null;
+  return d.slice(0, 2) + d.slice(2).slice(-8);
+}
+
+function dealEmails(d) {
+  const out = [];
+  for (const c of d.contacts || []) for (const e of c.emails || []) if (e && e.email) out.push(String(e.email).toLowerCase().trim());
+  const cf = (d.deal_custom_fields || []).find((x) => x.custom_field && /e-?mail/i.test(x.custom_field.label || ''));
+  if (cf && cf.value) out.push(String(cf.value).toLowerCase().trim());
+  return out;
+}
+
+function parseSheetDateISO(raw) {
+  const m = String(raw || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!m) return null;
+  const hasComma = String(raw).includes(',');
+  const [, a, b, y] = m;
+  const dd = hasComma ? a : b, mm = hasComma ? b : a;
+  return `${y}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+}
+
+// Devolve { byPhone: Map, byEmail: Map, since: 'YYYY-MM-DD'|null } a partir da planilha.
+async function fetchCaptureSheet() {
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 9000);
+    let text, ok, ct;
+    try {
+      const r = await fetch(SHEET_CSV_URL, { redirect: 'follow', headers: { 'User-Agent': 'DashboardBot/1.0', Accept: 'text/csv,*/*' }, signal: controller.signal });
+      ok = r.ok; ct = r.headers.get('content-type') || ''; text = await r.text();
+    } finally { clearTimeout(t); }
+    if (!ok || ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(text)) return { ok: false, byPhone: new Map(), byEmail: new Map(), since: null };
+
+    const rows = parseCSV(text).filter((r) => r.some((c) => (c || '').trim() !== ''));
+    const hi = rows.findIndex((r) => r.some((c) => /nome|name/i.test(c)));
+    const header = hi >= 0 ? rows[hi] : rows[0];
+    const dataRows = rows.slice((hi >= 0 ? hi : 0) + 1);
+    const col = (...names) => {
+      for (const n of names) { const i = header.findIndex((h) => h.trim().toLowerCase() === n.toLowerCase()); if (i >= 0) return i; }
+      for (const n of names) { const i = header.findIndex((h) => h.trim().toLowerCase().includes(n.toLowerCase())); if (i >= 0) return i; }
+      return -1;
+    };
+    const ci = {
+      phone: col('Phone', 'Telefone', 'WhatsApp', 'Celular'),
+      email: col('Email', 'E-mail'),
+      content: col('utm_content'),
+      camp: col('utm_campaign'),
+      date: col('Data/Hora'),
+    };
+    const byPhone = new Map(), byEmail = new Map();
+    let since = null;
+    for (const r of dataRows) {
+      const iso = ci.date >= 0 ? parseSheetDateISO(r[ci.date]) : null;
+      if (iso && (!since || iso < since)) since = iso;
+      const lead = {
+        content: (ci.content >= 0 ? r[ci.content] : '') || '',
+        camp: (ci.camp >= 0 ? r[ci.camp] : '') || '',
+      };
+      const pk = ci.phone >= 0 ? phoneKey(r[ci.phone]) : null;
+      if (pk && !byPhone.has(pk)) byPhone.set(pk, lead);
+      const em = ci.email >= 0 ? String(r[ci.email] || '').toLowerCase().trim() : '';
+      if (em && !byEmail.has(em)) byEmail.set(em, lead);
+    }
+    return { ok: true, byPhone, byEmail, since };
+  } catch (e) {
+    return { ok: false, byPhone: new Map(), byEmail: new Map(), since: null };
+  }
+}
+
 async function fetchWonDeals() {
   if (!RD_TOKEN) return { ok: false, reason: 'missing_token', deals: [] };
   try {
@@ -128,11 +226,13 @@ export default async function handler(req, res) {
       ? { start: new Date(startParam + 'T00:00:00'), end: new Date(new Date(endParam + 'T00:00:00').getTime() + 86400000) }
       : (range ? rangeToWindow(range) : null);
 
-    const { ok, reason, deals } = await fetchWonDeals();
+    const [{ ok, reason, deals }, sheet] = await Promise.all([fetchWonDeals(), fetchCaptureSheet()]);
 
     const stateAgg = new Map();       // UF -> { count, amount }
     const regionAgg = {};             // regiao -> { count, amount }
+    const creativeAgg = new Map();    // utm_content -> { content, camp, count, amount }
     let total = 0, amountTotal = 0, semRegiao = 0;
+    let matched = 0, unmatched = 0;   // venda casada (ou não) com a planilha de captação
 
     for (const d of deals) {
       const closed = d.closed_at ? new Date(d.closed_at) : null;
@@ -143,6 +243,22 @@ export default async function handler(req, res) {
       const raw = Number(d.amount_total) || 0;
       const amt = raw > 0 && raw <= 300000 ? raw : 0;
       amountTotal += amt;
+
+      // ---- casa a venda com o lead da planilha (telefone; e-mail como reserva) ----
+      const pk = phoneKey(dealPhone(d));
+      let lead = pk ? sheet.byPhone.get(pk) : null;
+      if (!lead) { for (const em of dealEmails(d)) { if (sheet.byEmail.get(em)) { lead = sheet.byEmail.get(em); break; } } }
+      if (lead) {
+        matched += 1;
+        const content = (lead.content || '').trim() || '(sem utm_content)';
+        const key = content;
+        if (!creativeAgg.has(key)) creativeAgg.set(key, { content, camp: (lead.camp || '').trim() || '—', count: 0, amount: 0 });
+        const g = creativeAgg.get(key);
+        g.count += 1;
+        g.amount += amt;
+      } else {
+        unmatched += 1;
+      }
 
       const uf = ufFromPhone(dealPhone(d));
       if (!uf) { semRegiao += 1; continue; }
@@ -182,6 +298,18 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => b.count - a.count || b.amount - a.amount);
 
+    const salesByCreative = Array.from(creativeAgg.values())
+      .map((g) => ({
+        content: g.content,
+        campaign: g.camp,
+        count: g.count,
+        amount: Math.round(g.amount),
+        amountLabel: g.amount ? brl(g.amount) : '-',
+        ticketLabel: (g.count && g.amount) ? brl(g.amount / g.count) : '-',
+        pct: matched ? Math.round((g.count / matched) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count || b.amount - a.amount);
+
     res.status(200).json({
       connected: ok,
       error: ok ? null : reason,
@@ -193,6 +321,11 @@ export default async function handler(req, res) {
       salesSemRegiao: semRegiao,
       salesByRegion,
       salesByState,
+      salesByCreative,
+      salesMatched: matched,
+      salesUnmatched: unmatched,
+      sheetConnected: sheet.ok,
+      sheetSince: sheet.since,
       range: window ? { since: window.start.toISOString().slice(0, 10) } : null,
       updatedAt: new Date().toISOString(),
     });
