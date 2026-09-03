@@ -183,6 +183,45 @@ function compactNumber(n) {
   return String(Math.round(n));
 }
 
+// ---------- Geografia: DDD do telefone -> UF / região ----------
+const DDD_UF = {
+  11: 'SP', 12: 'SP', 13: 'SP', 14: 'SP', 15: 'SP', 16: 'SP', 17: 'SP', 18: 'SP', 19: 'SP',
+  21: 'RJ', 22: 'RJ', 24: 'RJ', 27: 'ES', 28: 'ES',
+  31: 'MG', 32: 'MG', 33: 'MG', 34: 'MG', 35: 'MG', 37: 'MG', 38: 'MG',
+  41: 'PR', 42: 'PR', 43: 'PR', 44: 'PR', 45: 'PR', 46: 'PR',
+  47: 'SC', 48: 'SC', 49: 'SC',
+  51: 'RS', 53: 'RS', 54: 'RS', 55: 'RS',
+  61: 'DF', 62: 'GO', 64: 'GO', 63: 'TO', 65: 'MT', 66: 'MT', 67: 'MS',
+  68: 'AC', 69: 'RO',
+  71: 'BA', 73: 'BA', 74: 'BA', 75: 'BA', 77: 'BA', 79: 'SE',
+  81: 'PE', 87: 'PE', 82: 'AL', 83: 'PB', 84: 'RN', 85: 'CE', 88: 'CE', 86: 'PI', 89: 'PI',
+  91: 'PA', 93: 'PA', 94: 'PA', 92: 'AM', 97: 'AM', 95: 'RR', 96: 'AP', 98: 'MA', 99: 'MA',
+};
+const UF_NOME = {
+  AC: 'Acre', AL: 'Alagoas', AP: 'Amapá', AM: 'Amazonas', BA: 'Bahia', CE: 'Ceará',
+  DF: 'Distrito Federal', ES: 'Espírito Santo', GO: 'Goiás', MA: 'Maranhão', MT: 'Mato Grosso',
+  MS: 'Mato Grosso do Sul', MG: 'Minas Gerais', PA: 'Pará', PB: 'Paraíba', PR: 'Paraná',
+  PE: 'Pernambuco', PI: 'Piauí', RJ: 'Rio de Janeiro', RN: 'Rio Grande do Norte',
+  RS: 'Rio Grande do Sul', RO: 'Rondônia', RR: 'Roraima', SC: 'Santa Catarina',
+  SP: 'São Paulo', SE: 'Sergipe', TO: 'Tocantins',
+};
+const UF_REGIAO = {
+  AC: 'Norte', AP: 'Norte', AM: 'Norte', PA: 'Norte', RO: 'Norte', RR: 'Norte', TO: 'Norte',
+  AL: 'Nordeste', BA: 'Nordeste', CE: 'Nordeste', MA: 'Nordeste', PB: 'Nordeste',
+  PE: 'Nordeste', PI: 'Nordeste', RN: 'Nordeste', SE: 'Nordeste',
+  DF: 'Centro-Oeste', GO: 'Centro-Oeste', MT: 'Centro-Oeste', MS: 'Centro-Oeste',
+  ES: 'Sudeste', MG: 'Sudeste', RJ: 'Sudeste', SP: 'Sudeste',
+  PR: 'Sul', RS: 'Sul', SC: 'Sul',
+};
+function ufFromPhone(raw) {
+  if (!raw) return null;
+  let s = String(raw).replace(/\D/g, '');
+  if (s.startsWith('55') && s.length > 11) s = s.slice(2); // tira código do país
+  if (s.length < 10) return null; // precisa de DDD (2) + número (8/9)
+  const ddd = parseInt(s.slice(0, 2), 10);
+  return DDD_UF[ddd] || null;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=15');
   try {
@@ -214,6 +253,7 @@ export default async function handler(req, res) {
     const idx = {
       data: colAny('Data/Hora'), nome: colAny('Nome', 'First Name', 'Name'), faturamento: colAny('Faturamento', 'Faixa de faturamento Mensal', 'Faixa de faturamento'),
       area: colAny('Área', 'Area'), utmCampaign: colAny('utm_campaign'), utmContent: colAny('utm_content'),
+      telefone: colAny('Phone', 'Telefone', 'Celular', 'WhatsApp', 'Whatsapp', 'Fone', 'DDD'),
     };
 
     const { range, start: startParam, end: endParam } = req.query || {};
@@ -222,6 +262,8 @@ export default async function handler(req, res) {
     const leads = [];
     const leadsPerDayMap = new Map(); // iso date -> { naoQualif, qualif, ultra }
     const hourBuckets = { madrugada: 0, manha: 0, tarde: 0, noite: 0 };
+    const stateCounts = new Map(); // UF -> nº de leads (derivado do DDD do telefone)
+    let leadsSemDDD = 0;
     dataRows.forEach((r, i) => {
       const nome = idx.nome >= 0 ? (r[idx.nome] || '').trim() : '';
       if (!nome) return;
@@ -231,6 +273,10 @@ export default async function handler(req, res) {
       const faturamentoRaw = idx.faturamento >= 0 ? (r[idx.faturamento] || '').trim() : '';
       const faturamentoValor = parseFaturamento(faturamentoRaw);
       const q = qualificationFor(faturamentoValor);
+
+      const uf = idx.telefone >= 0 ? ufFromPhone(r[idx.telefone]) : null;
+      if (uf) stateCounts.set(uf, (stateCounts.get(uf) || 0) + 1);
+      else leadsSemDDD += 1;
 
       if (parsedDate) {
         const iso = toISODate(parsedDate);
@@ -395,6 +441,17 @@ export default async function handler(req, res) {
       const b = leadsPerDayMap.get(iso) || { naoQualif: 0, qualif: 0, ultra: 0 };
       return { date: iso, label: dayLabelOf(iso), naoQualif: b.naoQualif, qualif: b.qualif, ultra: b.ultra, total: b.naoQualif + b.qualif + b.ultra };
     });
+    const geoTotal = Array.from(stateCounts.values()).reduce((a, b) => a + b, 0);
+    const leadsByState = Array.from(stateCounts.entries())
+      .map(([uf, count]) => ({
+        uf,
+        nome: UF_NOME[uf] || uf,
+        regiao: UF_REGIAO[uf] || '-',
+        count,
+        pct: geoTotal ? Math.round((count / geoTotal) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
     const hourTotal = hourBuckets.madrugada + hourBuckets.manha + hourBuckets.tarde + hourBuckets.noite;
     const hourPct = (n) => (hourTotal ? (n / hourTotal) * 100 : 0);
     const hourlyDistribution = [
@@ -407,6 +464,7 @@ export default async function handler(req, res) {
     res.status(200).json({
       kpis, leadsList, creativesList, campaignsList,
       dailySpend, leadsPerDay, hourlyDistribution,
+      leadsByState, leadsByStateTotal: geoTotal, leadsSemDDD,
       meta: { connected: metaOk, error: metaOk ? null : campaignInsights.reason }, range: { since, until },
       source: 'meta+google-sheets',
       updatedAt: new Date().toISOString(),
