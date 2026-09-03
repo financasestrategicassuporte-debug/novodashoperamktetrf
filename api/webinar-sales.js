@@ -362,6 +362,7 @@ export default async function handler(req, res) {
       .map((g) => {
         const invest = metaAds.ok ? spendForContent(g.content) : 0;
         const roi = (metaAds.ok && invest > 0) ? g.amount / invest : null;
+        const cpa = (metaAds.ok && invest > 0 && g.count > 0) ? invest / g.count : null;
         return {
           content: g.content,
           campaign: g.camp,
@@ -371,6 +372,8 @@ export default async function handler(req, res) {
           ticketLabel: (g.count && g.amount) ? brl(g.amount / g.count) : '-',
           invest: Math.round(invest),
           investLabel: (metaAds.ok && invest > 0) ? brl(invest) : '-',
+          cpa: cpa != null ? Math.round(cpa) : null,
+          cpaLabel: cpa != null ? brl(cpa) : '-',
           roi,
           roiLabel: roi != null ? roi.toFixed(1).replace('.', ',') + 'x' : '-',
           pct: matched ? Math.round((g.count / matched) * 100) : 0,
