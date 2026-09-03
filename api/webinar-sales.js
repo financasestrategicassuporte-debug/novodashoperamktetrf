@@ -158,12 +158,18 @@ export default async function handler(req, res) {
     const comRegiao = total - semRegiao;
     const salesByRegion = REGIAO_ORDER.map((reg) => {
       const g = regionAgg[reg] || { count: 0, amount: 0 };
+      const ufs = Array.from(stateAgg.entries())
+        .filter(([uf]) => UF_REGIAO[uf] === reg)
+        .map(([uf, s]) => ({ uf, count: s.count }))
+        .sort((a, b) => b.count - a.count || a.uf.localeCompare(b.uf));
       return {
         regiao: reg,
         count: g.count,
         amount: Math.round(g.amount),
         amountLabel: g.amount ? brl(g.amount) : '-',
         pct: comRegiao ? Math.round((g.count / comRegiao) * 100) : 0,
+        estados: ufs,
+        estadosLabel: ufs.length ? ufs.map((e) => e.uf).join(', ') : '',
       };
     });
     const salesByState = Array.from(stateAgg.entries())
