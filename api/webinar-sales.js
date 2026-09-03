@@ -167,6 +167,8 @@ export default async function handler(req, res) {
         count: g.count,
         amount: Math.round(g.amount),
         amountLabel: g.amount ? brl(g.amount) : '-',
+        ticketMedio: (g.count && g.amount) ? Math.round(g.amount / g.count) : 0,
+        ticketLabel: (g.count && g.amount) ? brl(g.amount / g.count) : '-',
         pct: comRegiao ? Math.round((g.count / comRegiao) * 100) : 0,
         estados: ufs,
         estadosLabel: ufs.length ? ufs.map((e) => e.uf).join(', ') : '',
