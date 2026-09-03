@@ -92,6 +92,49 @@ function brl(n) {
   if (n == null || isNaN(n)) return '-';
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
 }
+function toISODate(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// ---------- Meta Ads: investimento por criativo (mesma régua do /api/data) ----------
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_AD_ACCOUNT_ID = process.env.META_AD_ACCOUNT_ID || '';
+const META_API_VERSION = process.env.META_API_VERSION || 'v20.0';
+
+function normTag(s) {
+  return (s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+function tagsMatch(a, b) {
+  const na = normTag(a), nb = normTag(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+async function fetchMetaAdInsights({ since, until }) {
+  if (!META_ACCESS_TOKEN || !META_AD_ACCOUNT_ID) return { ok: false, rows: [] };
+  const acct = META_AD_ACCOUNT_ID.startsWith('act_') ? META_AD_ACCOUNT_ID : `act_${META_AD_ACCOUNT_ID}`;
+  const params = new URLSearchParams({
+    level: 'ad',
+    fields: 'ad_name,campaign_name,adset_name,spend',
+    time_range: JSON.stringify({ since, until }),
+    time_increment: 'all_days', limit: '400',
+    access_token: META_ACCESS_TOKEN,
+  });
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 9000);
+    let json;
+    try {
+      const res = await fetch(`https://graph.facebook.com/${META_API_VERSION}/${acct}/insights?${params}`, { signal: controller.signal });
+      json = await res.json();
+      if (!res.ok || json.error) return { ok: false, rows: [] };
+    } finally { clearTimeout(t); }
+    return { ok: true, rows: json.data || [] };
+  } catch (e) {
+    return { ok: false, rows: [] };
+  }
+}
 
 // ---------- Planilha de captação (Google Sheets CSV) — pra casar venda -> criativo ----------
 const SHEET_ID = process.env.SHEET_ID || '1MW_dyf0VOHULceCCtY7FkCR_tLCCkM6YqPY-TQd8fjI';
@@ -226,7 +269,16 @@ export default async function handler(req, res) {
       ? { start: new Date(startParam + 'T00:00:00'), end: new Date(new Date(endParam + 'T00:00:00').getTime() + 86400000) }
       : (range ? rangeToWindow(range) : null);
 
-    const [{ ok, reason, deals }, sheet] = await Promise.all([fetchWonDeals(), fetchCaptureSheet()]);
+    // Janela do investimento em mídia = mesma do período (default 30 dias, como no /api/data)
+    const metaWindow = window || rangeToWindow('30 dias');
+    const metaSince = toISODate(metaWindow.start);
+    const metaUntil = toISODate(new Date(metaWindow.end.getTime() - 86400000));
+
+    const [{ ok, reason, deals }, sheet, metaAds] = await Promise.all([
+      fetchWonDeals(),
+      fetchCaptureSheet(),
+      fetchMetaAdInsights({ since: metaSince, until: metaUntil }),
+    ]);
 
     const stateAgg = new Map();       // UF -> { count, amount }
     const regionAgg = {};             // regiao -> { count, amount }
@@ -298,16 +350,32 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => b.count - a.count || b.amount - a.amount);
 
+    // ---- investimento por criativo (Meta Ads, level ad, casado pelo nome do anúncio) ----
+    const adSpendRows = (metaAds.rows || []).map((r) => ({ name: r.ad_name, spend: parseFloat(r.spend || '0') || 0 }));
+    function spendForContent(content) {
+      let s = 0;
+      for (const row of adSpendRows) if (tagsMatch(content, row.name)) s += row.spend;
+      return s;
+    }
+
     const salesByCreative = Array.from(creativeAgg.values())
-      .map((g) => ({
-        content: g.content,
-        campaign: g.camp,
-        count: g.count,
-        amount: Math.round(g.amount),
-        amountLabel: g.amount ? brl(g.amount) : '-',
-        ticketLabel: (g.count && g.amount) ? brl(g.amount / g.count) : '-',
-        pct: matched ? Math.round((g.count / matched) * 100) : 0,
-      }))
+      .map((g) => {
+        const invest = metaAds.ok ? spendForContent(g.content) : 0;
+        const roi = (metaAds.ok && invest > 0) ? g.amount / invest : null;
+        return {
+          content: g.content,
+          campaign: g.camp,
+          count: g.count,
+          amount: Math.round(g.amount),
+          amountLabel: g.amount ? brl(g.amount) : '-',
+          ticketLabel: (g.count && g.amount) ? brl(g.amount / g.count) : '-',
+          invest: Math.round(invest),
+          investLabel: (metaAds.ok && invest > 0) ? brl(invest) : '-',
+          roi,
+          roiLabel: roi != null ? roi.toFixed(1).replace('.', ',') + 'x' : '-',
+          pct: matched ? Math.round((g.count / matched) * 100) : 0,
+        };
+      })
       .sort((a, b) => b.count - a.count || b.amount - a.amount);
 
     res.status(200).json({
@@ -326,6 +394,8 @@ export default async function handler(req, res) {
       salesUnmatched: unmatched,
       sheetConnected: sheet.ok,
       sheetSince: sheet.since,
+      metaConnected: metaAds.ok,
+      investRange: { since: metaSince, until: metaUntil },
       range: window ? { since: window.start.toISOString().slice(0, 10) } : null,
       updatedAt: new Date().toISOString(),
     });
