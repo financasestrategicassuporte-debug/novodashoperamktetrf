@@ -143,7 +143,23 @@ function normTag(s) {
 function tagsMatch(a, b) {
   const na = normTag(a), nb = normTag(b);
   if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+  // Nome da campanha no Meta às vezes ganha UM token curto a mais que o
+  // utm_campaign do lead (ex.: renomearam "[CAPTAÇÃO]" pra "[CAPTAÇÃO V]").
+  // Casa quando as sequências de tokens ficam idênticas tirando no máximo um
+  // token curto (<=2 chars) ou puramente numérico de um dos lados. Não funde
+  // "[CAPTAÇÃO 4]" com "[CAPTAÇÃO 5]" nem descritores diferentes.
+  const A = na.split(" "), B = nb.split(" ");
+  const [S, L] = A.length <= B.length ? [A, B] : [B, A];
+  if (L.length - S.length > 1) return false;
+  const eqSeq = (x, y) => x.length === y.length && x.every((t, i) => t === y[i]);
+  if (eqSeq(S, L)) return true;
+  for (let i = 0; i < L.length; i++) {
+    const t = L[i];
+    if (!(t.length <= 2 || /^\d+$/.test(t))) continue;
+    if (eqSeq(S, L.slice(0, i).concat(L.slice(i + 1)))) return true;
+  }
+  return false;
 }
 async function fetchMetaAdInsights({ since, until }) {
   if (!META_ACCESS_TOKEN || !META_AD_ACCOUNT_ID) return { ok: false, rows: [] };
