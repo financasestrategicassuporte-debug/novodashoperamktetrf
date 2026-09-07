@@ -349,8 +349,12 @@ export default async function handler(req, res) {
 
     const byCampaign = new Map();
     leads.forEach((l) => {
-      const key = l._camp;
-      if (!byCampaign.has(key)) byCampaign.set(key, { camp: key, total: 0, qualif: 0, spend: 0, impressions: 0, clicks: 0, matched: false });
+      const raw = l._camp;
+      const placeholder = raw === '(sem campanha)' || /\{\{.*\}\}/.test(raw);
+      // Agrupa variações que só diferem em pontuação ("ADVTG+" vs "ADVTG ") sob
+      // a mesma chave, pra não virar 2 linhas com o gasto indo só pra uma.
+      const key = placeholder ? raw : (normTag(raw) || raw);
+      if (!byCampaign.has(key)) byCampaign.set(key, { camp: raw, total: 0, qualif: 0, spend: 0, impressions: 0, clicks: 0, matched: false, placeholder });
       const g = byCampaign.get(key);
       g.total += 1;
       if (l._fat != null && l._fat >= 50000) g.qualif += 1;
@@ -383,7 +387,7 @@ export default async function handler(req, res) {
       // quando existe exatamente UM candidato ainda livre (sem ambiguidade).
       for (const { row, spend, impressions, clicks } of leftover) {
         const cands = Array.from(byCampaign.keys()).filter(
-          (k) => !usedKeys.has(k) && !k.startsWith('__meta__') && k !== '(sem campanha)' && tagsMatchLoose(k, row.campaign_name)
+          (k) => !usedKeys.has(k) && !k.startsWith('__meta__') && !byCampaign.get(k).placeholder && tagsMatchLoose(k, row.campaign_name)
         );
         if (cands.length === 1) {
           const g = byCampaign.get(cands[0]);
