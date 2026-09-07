@@ -147,6 +147,22 @@ function tagsMatch(a, b) {
   }
   return false;
 }
+// Mais tolerante: aceita também UM token curto/numérico DIFERENTE na mesma
+// posição (ex.: "[CAPTAÇÃO 4]" vs "[CAPTAÇÃO 5]"). Só usado na 2ª passada do
+// casamento de campanha, e só quando o pareamento é 1-pra-1 (sem ambiguidade).
+function tagsMatchLoose(a, b) {
+  if (tagsMatch(a, b)) return true;
+  const A = normTag(a).split(' '), B = normTag(b).split(' ');
+  if (!A.length || A.length !== B.length) return false;
+  const shortLike = (t) => t.length <= 2 || /^\d+$/.test(t);
+  let diffs = 0;
+  for (let i = 0; i < A.length; i++) {
+    if (A[i] === B[i]) continue;
+    diffs += 1;
+    if (!shortLike(A[i]) || !shortLike(B[i])) return false;
+  }
+  return diffs === 1;
+}
 
 // ---------- Meta Ads ----------
 async function fetchMetaInsights({ since, until, level }) {
@@ -341,20 +357,42 @@ export default async function handler(req, res) {
     });
     let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalLinkClicks = 0;
     if (metaOk) {
+      const usedKeys = new Set();
+      const leftover = [];
+      // 1ª passada — casamento estrito (exato / substring / 1 token curto a mais)
       campaignInsights.rows.forEach((row) => {
         const spend = parseFloat(row.spend || '0') || 0;
         const impressions = parseInt(row.impressions || '0', 10) || 0;
         const clicks = parseInt(row.clicks || '0', 10) || 0;
         totalSpend += spend; totalImpressions += impressions; totalClicks += clicks; totalLinkClicks += parseInt(row.inline_link_clicks || '0', 10) || 0;
         let matchedKey = null;
-        for (const key of byCampaign.keys()) { if (tagsMatch(key, row.campaign_name)) { matchedKey = key; break; } }
+        for (const key of byCampaign.keys()) {
+          if (usedKeys.has(key)) continue;
+          if (tagsMatch(key, row.campaign_name)) { matchedKey = key; break; }
+        }
         if (matchedKey) {
           const g = byCampaign.get(matchedKey);
           g.spend += spend; g.impressions += impressions; g.clicks += clicks; g.matched = true;
+          usedKeys.add(matchedKey);
+        } else {
+          leftover.push({ row, spend, impressions, clicks });
+        }
+      });
+      // 2ª passada — pros gastos que sobraram, tenta casar tolerando 1 token
+      // curto/numérico diferente ("[CAPTAÇÃO 4]" vs "[CAPTAÇÃO 5]"), mas só
+      // quando existe exatamente UM candidato ainda livre (sem ambiguidade).
+      for (const { row, spend, impressions, clicks } of leftover) {
+        const cands = Array.from(byCampaign.keys()).filter(
+          (k) => !usedKeys.has(k) && !k.startsWith('__meta__') && k !== '(sem campanha)' && tagsMatchLoose(k, row.campaign_name)
+        );
+        if (cands.length === 1) {
+          const g = byCampaign.get(cands[0]);
+          g.spend += spend; g.impressions += impressions; g.clicks += clicks; g.matched = true;
+          usedKeys.add(cands[0]);
         } else {
           byCampaign.set(`__meta__${row.campaign_name}`, { camp: row.campaign_name, total: 0, qualif: 0, spend, impressions, clicks, matched: true });
         }
-      });
+      }
     }
     const maxQualif = Math.max(1, ...Array.from(byCampaign.values()).map((g) => g.qualif));
     const campaignsList = Array.from(byCampaign.values())
