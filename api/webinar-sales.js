@@ -284,7 +284,7 @@ export default async function handler(req, res) {
   try {
     const { range, start: startParam, end: endParam } = req.query || {};
     const window = (startParam && endParam)
-      ? { start: new Date(startParam + 'T00:00:00'), end: new Date(new Date(endParam + 'T00:00:00').getTime() + 86400000) }
+      ? { start: new Date(startParam + 'T00:00:00-03:00'), end: new Date(new Date(endParam + 'T00:00:00-03:00').getTime() + 86400000) }
       : (range ? rangeToWindow(range) : null);
 
     // Janela do investimento em mídia = mesma do período (default 30 dias, como no /api/data)

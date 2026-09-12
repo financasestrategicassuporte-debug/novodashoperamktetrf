@@ -289,7 +289,7 @@ export default async function handler(req, res) {
     };
 
     const { range, start: startParam, end: endParam } = req.query || {};
-    const window = (startParam && endParam) ? { start: new Date(startParam + 'T00:00:00'), end: new Date(new Date(endParam + 'T00:00:00').getTime() + 86400000) } : (range ? rangeToWindow(range) : null);
+    const window = (startParam && endParam) ? { start: new Date(startParam + 'T00:00:00-03:00'), end: new Date(new Date(endParam + 'T00:00:00-03:00').getTime() + 86400000) } : (range ? rangeToWindow(range) : null);
 
     const leads = [];
     const leadsPerDayMap = new Map(); // iso date -> { naoQualif, qualif, ultra }
