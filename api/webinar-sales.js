@@ -278,7 +278,9 @@ async function fetchWonDeals() {
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=120');
+  // Cache curto — uma venda marcada no RD Station precisa aparecer rápido no
+  // card "Vendas por Região"/"Criativos que trouxeram vendas".
+  res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
   try {
     const { range, start: startParam, end: endParam } = req.query || {};
     const window = (startParam && endParam)
