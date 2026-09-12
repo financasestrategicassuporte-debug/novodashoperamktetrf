@@ -222,7 +222,9 @@ async function fetchAllDeals() {
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=300');
+  // Cache curto — uma reunião marcada/venda no RD Station precisa aparecer
+  // rápido no card "Criativos que trouxeram reunião".
+  res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
   try {
     const { range, start: startParam, end: endParam } = req.query || {};
     const window = (startParam && endParam)
