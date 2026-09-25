@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Login — Dashboard de Funis</title>
+<style>
+  :root {
+    --bg: #f6f8f6;
+    --card: #ffffff;
+    --border: #e2e7e2;
+    --text: #16241d;
+    --muted: #6b7c72;
+    --accent: #16a34a;
+    --accent-dark: #15803d;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 360px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 28px;
+    box-shadow: 0 1px 3px rgba(22, 36, 29, 0.06), 0 8px 24px rgba(22, 36, 29, 0.06);
+  }
+  .card h1 {
+    font-size: 19px;
+    margin: 0 0 4px;
+  }
+  .card p.sub {
+    margin: 0 0 24px;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: var(--text);
+  }
+  .field {
+    margin-bottom: 16px;
+  }
+  input[type="email"],
+  input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 14px;
+    background: #fbfdfb;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input[type="email"]:focus,
+  input[type="password"]:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
+  }
+  button {
+    width: 100%;
+    padding: 11px 12px;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error {
+    display: none;
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: var(--danger);
+    font-size: 13px;
+  }
+  .error.show { display: block; }
+</style>
+</head>
+<body>
+  <form class="card" id="login-form" autocomplete="off">
+    <h1>Dashboard de Funis</h1>
+    <p class="sub">Entre com suas credenciais para continuar.</p>
+
+    <div class="error" id="error-box"></div>
+
+    <div class="field">
+      <label for="email">E-mail</label>
+      <input type="email" id="email" name="email" required autocomplete="username" />
+    </div>
+
+    <div class="field">
+      <label for="password">Senha</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password" />
+    </div>
+
+    <button type="submit" id="submit-btn">Entrar</button>
+  </form>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const errorBox = document.getElementById('error-box');
+    const submitBtn = document.getElementById('submit-btn');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox.classList.remove('show');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Entrando...';
+
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+
+      try {
+        const resp = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+
+        if (resp.ok) {
+          const params = new URLSearchParams(window.location.search);
+          window.location.href = params.get('next') || '/';
+          return;
+        }
+
+        const data = await resp.json().catch(() => ({}));
+        errorBox.textContent = data.error || 'E-mail ou senha inválidos.';
+        errorBox.classList.add('show');
+      } catch (err) {
+        errorBox.textContent = 'Não foi possível conectar. Tente novamente.';
+        errorBox.classList.add('show');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Entrar';
+      }
+    });
+  </script>
+</body>
+</html>
