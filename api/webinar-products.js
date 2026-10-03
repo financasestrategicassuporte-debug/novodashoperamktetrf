@@ -183,6 +183,11 @@ export function extractFromText(text) {
   }
   return out;
 }
+// negócios de treino/teste do time ficam fora da conta:
+// "Treino" no nome ou "(Treino)" na descrição/anotação do card
+export const TREINO_NOME = /\btreino\b/i;
+export const TREINO_DESC = /[(\[]\s*treino\s*[)\]]/i;
+
 // junta todas as strings de um objeto (campos personalizados, descrição…)
 function allStrings(obj, out = [], depth = 0) {
   if (obj == null || depth > 5) return out;
@@ -265,9 +270,11 @@ async function fetchDealNotesInfo(dealId) {
         // a anotação mais recente com faturamento vence
         const sorted = acts.slice().sort((a, b) => String(b.date || b.created_at || '').localeCompare(String(a.date || a.created_at || '')));
         for (const a of sorted) {
-          const ex = extractFromText(a.text || a.description || a.body || '');
+          const txt = a.text || a.description || a.body || '';
+          if (TREINO_DESC.test(txt)) info.treino = true;
+          const ex = extractFromText(txt);
           if (ex.prod && !info.prod) info.prod = ex.prod;
-          if (ex.fat != null) { info.fat = ex.fat; info.fatRaw = ex.fatRaw; break; }
+          if (ex.fat != null && info.fat == null) { info.fat = ex.fat; info.fatRaw = ex.fatRaw; }
         }
         info.acts = acts.length;
       } else info.err = r.status;
@@ -324,7 +331,7 @@ export default async function handler(req, res) {
     const isAgendado = (d) => d.win === true || agendadoIds.has(stageIdOf(d));
     const isAconteceu = (d) => d.win === true || aconteceuIds.has(stageIdOf(d));
 
-    const agendados = deals.filter((d) => {
+    const agendadosAll = deals.filter((d) => {
       if (window) {
         const c = d.created_at ? new Date(d.created_at) : null;
         if (!(c && c >= window.start && c < window.end)) return false;
@@ -333,10 +340,13 @@ export default async function handler(req, res) {
     });
 
     // ---- produto de cada agendado: 1) campos/descrição do card 2) anotações 3) planilha 4) linha "Produto:"
+    // "Treino" no nome / "(Treino)" na descrição → desconsiderado
     const classify = async (d) => {
-      const own = extractFromText(allStrings([d.deal_custom_fields, d.description, d.notes]).join('\n'));
-      if (own.fat != null) return { prod: productFromFat(own.fat), src: 'card', fatRaw: own.fatRaw };
+      const ownText = allStrings([d.deal_custom_fields, d.description, d.notes]).join('\n');
       const notes = RD_TOKEN ? await fetchDealNotesInfo(d.id || d._id) : {};
+      if (TREINO_NOME.test(d.name || '') || TREINO_DESC.test(ownText) || notes.treino) return { treino: true };
+      const own = extractFromText(ownText);
+      if (own.fat != null) return { prod: productFromFat(own.fat), src: 'card', fatRaw: own.fatRaw };
       if (notes.fat != null) return { prod: productFromFat(notes.fat), src: 'anotacao', fatRaw: notes.fatRaw };
       const pk = phoneKey(dealPhone(d));
       let sf = pk ? sheet.byPhone.get(pk) : null;
@@ -346,7 +356,10 @@ export default async function handler(req, res) {
       if (prodHint) return { prod: prodHint, src: 'produto' };
       return { prod: null, src: 'nenhum', notes };
     };
-    const classes = await mapLimit(agendados, 8, classify);
+    const classesAll = await mapLimit(agendadosAll, 8, classify);
+    const treinoCount = classesAll.filter((c) => c.treino).length;
+    const agendados = agendadosAll.filter((_, i) => !classesAll[i].treino);
+    const classes = classesAll.filter((c) => !c.treino);
 
     const blank = () => ({ agendados: 0, acontecidas: 0 });
     const agg = { acelerador: blank(), pav: blank(), indefinido: blank() };
@@ -390,6 +403,7 @@ export default async function handler(req, res) {
       products: [productOut('acelerador', 'Acelerador de Matrículas'), productOut('pav', 'PAV')],
       indefinidos: agg.indefinido,
       agendadosTotal: agendados.length,
+      treinoIgnorados: treinoCount,
       sources,
       invest: spend != null ? Math.round(spend) : null,
       investLabel: spend != null ? brl(spend) : '-',
