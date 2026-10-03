@@ -197,9 +197,63 @@ function allStrings(obj, out = [], depth = 0) {
   return out;
 }
 
-// ---------- planilha: faixa de faturamento por telefone/e-mail ----------
-async function fetchSheetFat() {
-  const empty = { ok: false, byPhone: new Map(), byEmail: new Map() };
+// data/hora das planilhas — mesma leitura do /api/data (sem vírgula = M/D/AAAA)
+function parseRowDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const hasComma = s.includes(',');
+  const m = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const [, p1, p2, year, h, min, sec] = m;
+  const day = hasComma ? p1 : p2, month = hasComma ? p2 : p1;
+  const d = new Date(Number(year), Number(month) - 1, Number(day), Number(h), Number(min), Number(sec || 0));
+  return isNaN(d.getTime()) ? null : d;
+}
+// mesma regra de período do /api/data: linha sem data legível não é cortada
+const outOfWindow = (window, d) => !!(window && d && (d < window.start || d >= window.end));
+
+// ---------- planilha de APLICAÇÃO (formulário de pré-reunião) ----------
+const APLIC_SHEET_ID = process.env.APLICACAO_SHEET_ID || '12-vMpjxquYpO7TgQBsXuvsPLUdDmZZtUvyt5ucC8OSo';
+const APLIC_SHEET_GID = process.env.APLICACAO_SHEET_GID || '';
+const APLIC_CSV_URL = `https://docs.google.com/spreadsheets/d/${APLIC_SHEET_ID}/export?format=csv${APLIC_SHEET_GID ? `&gid=${APLIC_SHEET_GID}` : ''}`;
+async function fetchApplications(window) {
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 9000);
+    let text, ok, ct;
+    try {
+      const r = await fetch(APLIC_CSV_URL, { redirect: 'follow', headers: { 'User-Agent': 'DashboardBot/1.0', Accept: 'text/csv,*/*' }, signal: controller.signal });
+      ok = r.ok; ct = r.headers.get('content-type') || ''; text = await r.text();
+    } finally { clearTimeout(t); }
+    if (!ok || ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(text)) return { ok: false, count: 0 };
+    const rows = parseCSV(text).filter((r) => r.some((c) => (c || '').trim() !== ''));
+    const hi = rows.findIndex((r) => r.some((c) => /nome|name/i.test(c)));
+    const header = hi >= 0 ? rows[hi] : rows[0];
+    const dataRows = rows.slice((hi >= 0 ? hi : 0) + 1);
+    const col = (re) => header.findIndex((h) => re.test(h || ''));
+    // 1ª coluna é o carimbo de data/hora do Forms (cabeçalho às vezes vem sem nome)
+    let ciDate = col(/carimbo|data\/hora|timestamp/i);
+    if (ciDate < 0) ciDate = 0;
+    const ci = { date: ciDate, nome: col(/nome/i), phone: col(/telefone|whats|celular|phone/i), email: col(/e-?mail/i) };
+    const seen = new Set();
+    let count = 0;
+    for (const r of dataRows) {
+      if (ci.nome >= 0 && !(r[ci.nome] || '').trim()) continue;
+      const d = parseRowDate(r[ci.date]);
+      if (!d) continue; // linha sem data não entra na contagem por período
+      if (outOfWindow(window, d)) continue;
+      // mesmo lead preenchendo 2x no período conta 1 aplicação
+      const key = (ci.phone >= 0 && phoneKey(r[ci.phone])) || (ci.email >= 0 && String(r[ci.email] || '').toLowerCase().trim()) || null;
+      if (key) { if (seen.has(key)) continue; seen.add(key); }
+      count += 1;
+    }
+    return { ok: true, count };
+  } catch (e) { return { ok: false, count: 0 }; }
+}
+
+// ---------- planilha de captação: faixa de faturamento por telefone/e-mail + leads do período ----------
+async function fetchSheetFat(window) {
+  const empty = { ok: false, byPhone: new Map(), byEmail: new Map(), leads: 0 };
   try {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), 9000);
@@ -217,9 +271,12 @@ async function fetchSheetFat() {
       for (const n of names) { const i = header.findIndex((h) => h.trim().toLowerCase().includes(n.toLowerCase())); if (i >= 0) return i; }
       return -1;
     };
-    const ci = { phone: col('Phone', 'Telefone', 'WhatsApp', 'Celular'), email: col('Email', 'E-mail'), fat: col('faturamento') };
+    const ci = { phone: col('Phone', 'Telefone', 'WhatsApp', 'Celular'), email: col('Email', 'E-mail'), fat: col('faturamento'), date: col('Data/Hora'), nome: col('First Name', 'Nome', 'Name') };
     const byPhone = new Map(), byEmail = new Map();
+    let leads = 0;
     for (const r of dataRows) {
+      // leads captados no período — mesma contagem do card "Leads" (/api/data)
+      if ((ci.nome < 0 || (r[ci.nome] || '').trim()) && !outOfWindow(window, ci.date >= 0 ? parseRowDate(r[ci.date]) : null)) leads += 1;
       const fat = ci.fat >= 0 ? parseFaturamento(r[ci.fat]) : null;
       if (fat == null) continue;
       const pk = ci.phone >= 0 ? phoneKey(r[ci.phone]) : null;
@@ -227,7 +284,7 @@ async function fetchSheetFat() {
       const em = ci.email >= 0 ? String(r[ci.email] || '').toLowerCase().trim() : '';
       if (em) byEmail.set(em, fat);
     }
-    return { ok: true, byPhone, byEmail };
+    return { ok: true, byPhone, byEmail, leads };
   } catch (e) { return empty; }
 }
 
@@ -305,11 +362,12 @@ export default async function handler(req, res) {
     const metaSince = toISODate(metaWindow.start);
     const metaUntil = toISODate(new Date(metaWindow.end.getTime() - 86400000));
 
-    const [{ ok, reason, deals }, sheet, meta, pipeline] = await Promise.all([
+    const [{ ok, reason, deals }, sheet, meta, pipeline, aplic] = await Promise.all([
       fetchAllDeals(),
-      fetchSheetFat(),
+      fetchSheetFat(window),
       fetchMetaSpend({ since: metaSince, until: metaUntil }),
       fetchPipeline(),
+      fetchApplications(window),
     ]);
 
     // ---- estágios: agendado = "Reunião Agendada" ou além; acontecida = passou das etapas de reunião
@@ -389,6 +447,24 @@ export default async function handler(req, res) {
       };
     };
 
+    // ---- aplicações (planilha do formulário) + funil completo do período
+    const aplicacoes = aplic.ok ? aplic.count : null;
+    const cpApp = aplicacoes != null ? per(aplicacoes) : null;
+    const fAcontecidas = agendados.filter(isAconteceu).length;
+    const fVendas = agendados.filter((d) => d.win === true).length;
+    const rate = (num, den) => (num != null && den ? Math.round((num / den) * 1000) / 10 : null);
+    const funil = {
+      leads: sheet.ok ? sheet.leads : null,
+      aplicacoes,
+      agendados: agendados.length,
+      acontecidas: fAcontecidas,
+      vendas: fVendas,
+      taxaAplicacao: rate(aplicacoes, sheet.ok ? sheet.leads : null), // preencheram ÷ leads
+      taxaAgendamento: rate(agendados.length, aplicacoes),           // agendaram ÷ preencheram
+      taxaComparecimento: rate(fAcontecidas, agendados.length),      // aconteceram ÷ agendadas
+      taxaVenda: rate(fVendas, fAcontecidas),                        // vendas ÷ acontecidas
+    };
+
     // diagnóstico sem dados pessoais: etapas do funil e de onde veio o faturamento
     console.log('[webinar-products]', JSON.stringify({
       stages: stagesOrdered.map((s) => s.name), sources, agendados: agendados.length,
@@ -409,6 +485,11 @@ export default async function handler(req, res) {
       investLabel: spend != null ? brl(spend) : '-',
       metaConnected: meta.ok,
       sheetConnected: sheet.ok,
+      aplicacoesConnected: aplic.ok,
+      aplicacoes,
+      custoAplicacao: cpApp != null ? Math.round(cpApp) : null,
+      custoAplicacaoLabel: cpApp != null ? brl(cpApp) : '-',
+      funil,
       stagesAgendado: stagesOrdered.filter((s) => agendadoIds.has(sid(s))).map((s) => s.name),
       stagesAcontecida: stagesOrdered.filter((s) => aconteceuIds.has(sid(s))).map((s) => s.name),
       range: window ? { since: toISODate(window.start), until: toISODate(new Date(window.end.getTime() - 86400000)) } : null,
