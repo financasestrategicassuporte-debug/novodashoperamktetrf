@@ -19,6 +19,16 @@ const META_AD_ACCOUNT_ID = process.env.META_AD_ACCOUNT_ID || '';
 const META_API_VERSION = process.env.META_API_VERSION || 'v20.0';
 const MODEL = 'claude-opus-5-5';
 
+// Aceita os nomes mais comuns da variável e tira espaço/quebra de linha colados junto.
+const KEY_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY', 'ANTHROPIC_KEY', 'CLAUDE_KEY', 'ANTHROPIC_TOKEN'];
+function resolveApiKey() {
+  for (const name of KEY_VARS) {
+    const v = (process.env[name] || '').trim().replace(/^["']|["']$/g, '');
+    if (v) return { name, value: v };
+  }
+  return null;
+}
+
 // ---------- casamento criativo (utm_content) × nome do anúncio — mesma régua do /api/data ----------
 function normTag(s) {
   return (s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -145,8 +155,9 @@ export default async function handler(req, res) {
   const range = String((body && body.range) || '').slice(0, 40);
   const force = !!(body && body.force);
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(200).json({ ok: false, reason: 'missing_key', message: 'Falta a variável ANTHROPIC_API_KEY no projeto da Vercel para a IA funcionar.' });
+  const apiKey = resolveApiKey();
+  if (!apiKey) {
+    return res.status(200).json({ ok: false, reason: 'missing_key', message: 'A IA não encontrou a chave: cadastre ANTHROPIC_API_KEY em Vercel → novodashoperamktetrf → Settings → Environment Variables (marque Production) e faça Redeploy — a variável só vale para deploys feitos depois de salvar.' });
   }
   const clean = creatives.map((c) => ({
     nome: String(c.nome || '').slice(0, 160),
@@ -203,7 +214,7 @@ export default async function handler(req, res) {
     });
 
     // 3) Claude — saída em JSON validada pelo schema; fallback do servidor se o modelo recusar
-    const client = new Anthropic();
+    const client = new Anthropic({ apiKey: apiKey.value });
     const response = await client.beta.messages.create({
       model: MODEL,
       max_tokens: 16000,
@@ -241,7 +252,8 @@ export default async function handler(req, res) {
     return res.status(200).json(out);
   } catch (err) {
     if (err instanceof Anthropic.AuthenticationError) {
-      return res.status(200).json({ ok: false, reason: 'auth', message: 'A chave ANTHROPIC_API_KEY configurada na Vercel foi recusada. Confira a chave.' });
+      const formato = /^sk-ant-api/.test(apiKey.value) ? '' : ' Ela não tem o formato de chave de API (sk-ant-api03-…) — gere uma em console.anthropic.com → API Keys.';
+      return res.status(200).json({ ok: false, reason: 'auth', message: `A chave da variável ${apiKey.name} foi recusada pela Anthropic.${formato}` });
     }
     if (err instanceof Anthropic.RateLimitError) {
       return res.status(200).json({ ok: false, reason: 'rate_limit', message: 'Limite de uso da IA atingido agora. Tente de novo em alguns minutos.' });
