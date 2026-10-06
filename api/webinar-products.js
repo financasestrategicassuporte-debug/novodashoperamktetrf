@@ -32,6 +32,51 @@ const SHEET_CSV_URL = process.env.SHEET_CSV_URL || `https://docs.google.com/spre
 
 const PAV_THRESHOLD = 80000; // piso da faixa >= isso = PAV
 
+// ---------- DDD → estado (cópia do /api/webinar-sales, p/ o mapa de reuniões agendadas) ----------
+const DDD_UF = {
+  11: 'SP', 12: 'SP', 13: 'SP', 14: 'SP', 15: 'SP', 16: 'SP', 17: 'SP', 18: 'SP', 19: 'SP',
+  21: 'RJ', 22: 'RJ', 24: 'RJ', 27: 'ES', 28: 'ES',
+  31: 'MG', 32: 'MG', 33: 'MG', 34: 'MG', 35: 'MG', 37: 'MG', 38: 'MG',
+  41: 'PR', 42: 'PR', 43: 'PR', 44: 'PR', 45: 'PR', 46: 'PR',
+  47: 'SC', 48: 'SC', 49: 'SC',
+  51: 'RS', 53: 'RS', 54: 'RS', 55: 'RS',
+  61: 'DF', 62: 'GO', 64: 'GO', 63: 'TO', 65: 'MT', 66: 'MT', 67: 'MS',
+  68: 'AC', 69: 'RO',
+  71: 'BA', 73: 'BA', 74: 'BA', 75: 'BA', 77: 'BA', 79: 'SE',
+  81: 'PE', 87: 'PE', 82: 'AL', 83: 'PB', 84: 'RN', 85: 'CE', 88: 'CE', 86: 'PI', 89: 'PI',
+  91: 'PA', 93: 'PA', 94: 'PA', 92: 'AM', 97: 'AM', 95: 'RR', 96: 'AP', 98: 'MA', 99: 'MA',
+};
+const UF_NOME = {
+  AC: 'Acre', AL: 'Alagoas', AP: 'Amapá', AM: 'Amazonas', BA: 'Bahia', CE: 'Ceará',
+  DF: 'Distrito Federal', ES: 'Espírito Santo', GO: 'Goiás', MA: 'Maranhão', MT: 'Mato Grosso',
+  MS: 'Mato Grosso do Sul', MG: 'Minas Gerais', PA: 'Pará', PB: 'Paraíba', PR: 'Paraná',
+  PE: 'Pernambuco', PI: 'Piauí', RJ: 'Rio de Janeiro', RN: 'Rio Grande do Norte',
+  RS: 'Rio Grande do Sul', RO: 'Rondônia', RR: 'Roraima', SC: 'Santa Catarina',
+  SP: 'São Paulo', SE: 'Sergipe', TO: 'Tocantins',
+};
+const UF_REGIAO = {
+  AC: 'Norte', AP: 'Norte', AM: 'Norte', PA: 'Norte', RO: 'Norte', RR: 'Norte', TO: 'Norte',
+  AL: 'Nordeste', BA: 'Nordeste', CE: 'Nordeste', MA: 'Nordeste', PB: 'Nordeste',
+  PE: 'Nordeste', PI: 'Nordeste', RN: 'Nordeste', SE: 'Nordeste',
+  DF: 'Centro-Oeste', GO: 'Centro-Oeste', MT: 'Centro-Oeste', MS: 'Centro-Oeste',
+  ES: 'Sudeste', MG: 'Sudeste', RJ: 'Sudeste', SP: 'Sudeste',
+  PR: 'Sul', RS: 'Sul', SC: 'Sul',
+};
+const REGIAO_ORDER = ['Norte', 'Nordeste', 'Centro-Oeste', 'Sudeste', 'Sul'];
+
+function ufFromPhone(raw) {
+  if (!raw) return null;
+  let s = String(raw).split(/[\/,;]/)[0].trim();
+  // número internacional explícito que não seja Brasil (+55) fica de fora
+  if (/^\+(?!55)/.test(s) || /^00(?!55)/.test(s)) return null;
+  let digits = s.replace(/\D/g, '');
+  if (digits.startsWith('55') && digits.length > 11) digits = digits.slice(2);
+  if (digits.length < 10 || digits.length > 13) return null;
+  const ddd = parseInt(digits.slice(0, 2), 10);
+  return DDD_UF[ddd] || null;
+}
+
+
 function brl(n) {
   if (n == null || isNaN(n)) return '-';
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
@@ -452,6 +497,26 @@ export default async function handler(req, res) {
     const cpApp = aplicacoes != null ? per(aplicacoes) : null;
     const fAcontecidas = agendados.filter(isAconteceu).length;
     const fVendas = agendados.filter((d) => d.win === true).length;
+
+    // ---- reuniões agendadas por estado (DDD do telefone do negócio) — mapa do Brasil
+    const ufAgg = new Map(); // UF -> { agendados, acontecidas }
+    let agendadosSemDDD = 0;
+    for (const d of agendados) {
+      const uf = ufFromPhone(dealPhone(d));
+      if (!uf) { agendadosSemDDD += 1; continue; }
+      if (!ufAgg.has(uf)) ufAgg.set(uf, { agendados: 0, acontecidas: 0 });
+      const g = ufAgg.get(uf);
+      g.agendados += 1;
+      if (isAconteceu(d)) g.acontecidas += 1;
+    }
+    const agendadosComUF = agendados.length - agendadosSemDDD;
+    const agendadosByState = Array.from(ufAgg.entries())
+      .map(([uf, g]) => ({
+        uf, nome: UF_NOME[uf] || uf, regiao: UF_REGIAO[uf] || '',
+        count: g.agendados, acontecidas: g.acontecidas,
+        pct: agendadosComUF ? Math.round((g.agendados / agendadosComUF) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count || b.acontecidas - a.acontecidas);
     const rate = (num, den) => (num != null && den ? Math.round((num / den) * 1000) / 10 : null);
     const funil = {
       leads: sheet.ok ? sheet.leads : null,
@@ -490,6 +555,9 @@ export default async function handler(req, res) {
       custoAplicacao: cpApp != null ? Math.round(cpApp) : null,
       custoAplicacaoLabel: cpApp != null ? brl(cpApp) : '-',
       funil,
+      agendadosByState,
+      agendadosComUF,
+      agendadosSemDDD,
       stagesAgendado: stagesOrdered.filter((s) => agendadoIds.has(sid(s))).map((s) => s.name),
       stagesAcontecida: stagesOrdered.filter((s) => aconteceuIds.has(sid(s))).map((s) => s.name),
       range: window ? { since: toISODate(window.start), until: toISODate(new Date(window.end.getTime() - 86400000)) } : null,
