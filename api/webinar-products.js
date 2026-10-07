@@ -399,6 +399,9 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
   try {
     const { range, start: startParam, end: endParam } = req.query || {};
+    // lite=1: janelas longas (ex.: ranking desde janeiro) — não lê as anotações de cada negócio
+    // no RD (lento); "Treino" só pelo nome/campos do card e produto sem a linha da anotação.
+    const lite = String((req.query || {}).lite || '') === '1';
     const window = (startParam && endParam)
       ? { start: new Date(startParam + 'T00:00:00-03:00'), end: new Date(new Date(endParam + 'T00:00:00-03:00').getTime() + 86400000) }
       : (range ? rangeToWindow(range) : null);
@@ -446,7 +449,7 @@ export default async function handler(req, res) {
     // "Treino" no nome / "(Treino)" na descrição → desconsiderado
     const classify = async (d) => {
       const ownText = allStrings([d.deal_custom_fields, d.description, d.notes]).join('\n');
-      const notes = RD_TOKEN ? await fetchDealNotesInfo(d.id || d._id) : {};
+      const notes = (RD_TOKEN && !lite) ? await fetchDealNotesInfo(d.id || d._id) : {};
       if (TREINO_NOME.test(d.name || '') || TREINO_DESC.test(ownText) || notes.treino) return { treino: true };
       const own = extractFromText(ownText);
       if (own.fat != null) return { prod: productFromFat(own.fat), src: 'card', fatRaw: own.fatRaw };
