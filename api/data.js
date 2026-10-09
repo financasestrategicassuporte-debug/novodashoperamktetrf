@@ -410,6 +410,7 @@ export default async function handler(req, res) {
           camp: g.camp, leadsQualif: String(g.qualif),
           leadsQualifBarWidth: `${Math.round((g.qualif / maxQualif) * 100)}%`,
           totalLeads: String(g.total),
+          rawTotal: g.total, rawQualif: g.qualif, rawSpend: g.matched ? g.spend : null,
           invest: g.matched ? brl(g.spend) : '-',
           custoLead: custoLead != null ? brl(custoLead) : '-',
           ctr: ctr != null ? pct(ctr) : '-',
