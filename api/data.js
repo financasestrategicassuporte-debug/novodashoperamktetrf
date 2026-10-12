@@ -354,10 +354,11 @@ export default async function handler(req, res) {
       // Agrupa variações que só diferem em pontuação ("ADVTG+" vs "ADVTG ") sob
       // a mesma chave, pra não virar 2 linhas com o gasto indo só pra uma.
       const key = placeholder ? raw : (normTag(raw) || raw);
-      if (!byCampaign.has(key)) byCampaign.set(key, { camp: raw, total: 0, qualif: 0, spend: 0, impressions: 0, clicks: 0, matched: false, placeholder });
+      if (!byCampaign.has(key)) byCampaign.set(key, { camp: raw, total: 0, qualif: 0, semi: 0, q50: 0, ultra: 0, spend: 0, impressions: 0, clicks: 0, matched: false, placeholder });
       const g = byCampaign.get(key);
       g.total += 1;
       if (l._fat != null && l._fat >= 50000) g.qualif += 1;
+      if (l._fat != null) { if (l._fat >= 150000) g.ultra += 1; else if (l._fat >= 50000) g.q50 += 1; else if (l._fat >= 30000) g.semi += 1; }
     });
     let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalLinkClicks = 0;
     if (metaOk) {
@@ -394,7 +395,7 @@ export default async function handler(req, res) {
           g.spend += spend; g.impressions += impressions; g.clicks += clicks; g.matched = true;
           usedKeys.add(cands[0]);
         } else {
-          byCampaign.set(`__meta__${row.campaign_name}`, { camp: row.campaign_name, total: 0, qualif: 0, spend, impressions, clicks, matched: true });
+          byCampaign.set(`__meta__${row.campaign_name}`, { camp: row.campaign_name, total: 0, qualif: 0, semi: 0, q50: 0, ultra: 0, spend, impressions, clicks, matched: true });
         }
       }
     }
@@ -410,7 +411,7 @@ export default async function handler(req, res) {
           camp: g.camp, leadsQualif: String(g.qualif),
           leadsQualifBarWidth: `${Math.round((g.qualif / maxQualif) * 100)}%`,
           totalLeads: String(g.total),
-          rawTotal: g.total, rawQualif: g.qualif, rawSpend: g.matched ? g.spend : null,
+          rawTotal: g.total, rawQualif: g.qualif, rawSemi: g.semi || 0, rawQ50: g.q50 || 0, rawUltra: g.ultra || 0, rawSpend: g.matched ? g.spend : null,
           invest: g.matched ? brl(g.spend) : '-',
           custoLead: custoLead != null ? brl(custoLead) : '-',
           ctr: ctr != null ? pct(ctr) : '-',
