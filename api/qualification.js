@@ -103,15 +103,41 @@ function parseCSV(text) {
   return rows;
 }
 
-// Carimbo do Forms (col 0) vem em M/D/AAAA H:M:S → "AAAA-MM".
-function monthFromStamp(raw) {
+// Carimbo do Forms (col 0) vem em M/D/AAAA H:M:S (hora de Brasília) → 'AAAA-MM-DD'.
+function dayFromStamp(raw) {
   const m = String(raw || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  return m ? `${m[3]}-${m[1].padStart(2, '0')}` : null;
+  return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : null;
 }
+
+// Semana começa na segunda-feira; a chave é a data (AAAA-MM-DD) dessa segunda.
+function weekOf(day) {
+  const d = new Date(day + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+// Preenche os períodos sem nenhuma aplicação entre o primeiro e o último,
+// pra o gráfico não 'pular' semana/mês.
+function fillGaps(keys, step) {
+  if (!keys.length) return [];
+  const sorted = keys.slice().sort();
+  const out = [];
+  let cur = sorted[0];
+  const last = sorted[sorted.length - 1];
+  while (cur <= last && out.length < 1000) {
+    out.push(cur);
+    cur = step(cur);
+  }
+  return out;
+}
+const nextWeek = (k) => { const d = new Date(k + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 7); return d.toISOString().slice(0, 10); };
+const nextMonth = (k) => { const [y, m] = k.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
 
 function findCol(header, re) {
   return header.findIndex((h) => re.test(normalize(h)));
 }
+
+const emptyBucket = (key) => ({ key, total: 0, semResposta: 0, desqualificado: 0, semi: 0, qualificado: 0, ultra: 0 });
 
 export function computeQualification(csv) {
   const [header = [], ...rows] = parseCSV(csv);
@@ -123,26 +149,30 @@ export function computeQualification(csv) {
   // resposta mais recente (identificado por e-mail, senão telefone).
   const byLead = new Map();
   rows.forEach((r, i) => {
-    const month = monthFromStamp(r[0]);
-    if (!month) return;
+    const day = dayFromStamp(r[0]);
+    if (!day) return;
     const email = emailCol >= 0 ? normalize(r[emailCol]) : '';
     const phone = phoneCol >= 0 ? String(r[phoneCol] || '').replace(/\D/g, '') : '';
-    byLead.set(email || phone || `row-${i}`, { month, tier: revCol >= 0 ? classifyRevenue(r[revCol]) : null });
+    byLead.set(email || phone || `row-${i}`, { day, tier: revCol >= 0 ? classifyRevenue(r[revCol]) : null });
   });
 
-  const empty = (month) => ({ month, total: 0, semResposta: 0, desqualificado: 0, semi: 0, qualificado: 0, ultra: 0 });
   const months = new Map();
-  const totals = empty('total');
-  for (const { month, tier } of byLead.values()) {
-    if (!months.has(month)) months.set(month, empty(month));
-    for (const b of [months.get(month), totals]) {
+  const weeks = new Map();
+  const totals = emptyBucket('total');
+  for (const { day, tier } of byLead.values()) {
+    const mk = day.slice(0, 7);
+    const wk = weekOf(day);
+    if (!months.has(mk)) months.set(mk, emptyBucket(mk));
+    if (!weeks.has(wk)) weeks.set(wk, emptyBucket(wk));
+    for (const b of [months.get(mk), weeks.get(wk), totals]) {
       b.total += 1;
       if (tier) b[tier] += 1; else b.semResposta += 1;
     }
   }
   return {
     totals,
-    months: Array.from(months.values()).sort((a, b) => a.month.localeCompare(b.month)),
+    months: fillGaps(Array.from(months.keys()), nextMonth).map((k) => months.get(k) || emptyBucket(k)),
+    weeks: fillGaps(Array.from(weeks.keys()), nextWeek).map((k) => weeks.get(k) || emptyBucket(k)),
     respostas: rows.length,
   };
 }
@@ -197,27 +227,31 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   try {
     const [csv, sales] = await Promise.all([fetchApplicationsCsv(), fetchWonDeals()]);
-    const { totals, months, respostas } = computeQualification(csv);
+    const { totals, months, weeks, respostas } = computeQualification(csv);
 
-    // Faturamento por mês de fechamento (hora de Brasília). Mesma régua do
-    // webinar-sales: valor > R$300k é erro de digitação e fica fora da soma.
-    const revenue = {};
-    const vendas = {};
+    // Faturamento por mês/semana de fechamento (hora de Brasília). Mesma régua
+    // do webinar-sales: valor > R$300k é erro de digitação e fica fora da soma.
+    const rev = {};
+    const qtd = {};
     for (const d of sales.deals) {
       if (!d.closed_at) continue;
-      const month = new Date(new Date(d.closed_at).getTime() - 3 * 3600000).toISOString().slice(0, 7);
+      const day = new Date(new Date(d.closed_at).getTime() - 3 * 3600000).toISOString().slice(0, 10);
       const raw = Number(d.amount_total) || 0;
-      revenue[month] = (revenue[month] || 0) + (raw > 0 && raw <= 300000 ? raw : 0);
-      vendas[month] = (vendas[month] || 0) + 1;
+      for (const k of [day.slice(0, 7), 'w' + weekOf(day)]) {
+        rev[k] = (rev[k] || 0) + (raw > 0 && raw <= 300000 ? raw : 0);
+        qtd[k] = (qtd[k] || 0) + 1;
+      }
     }
+    const withSales = (b, k) => ({
+      ...b,
+      faturamento: sales.ok ? rev[k] || 0 : null,
+      vendas: sales.ok ? qtd[k] || 0 : null,
+    });
 
     res.status(200).json({
       totals,
-      months: months.map((m) => ({
-        ...m,
-        faturamento: sales.ok ? revenue[m.month] || 0 : null,
-        vendas: sales.ok ? vendas[m.month] || 0 : null,
-      })),
+      months: months.map((m) => ({ ...withSales(m, m.key), month: m.key })),
+      weeks: weeks.map((w) => withSales(w, 'w' + w.key)),
       respostas,
       salesConnected: sales.ok,
       salesReason: sales.ok ? null : sales.reason,
