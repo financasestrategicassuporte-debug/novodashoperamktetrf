@@ -44,6 +44,8 @@ const UF_REGIAO = {
   PR: 'Sul', RS: 'Sul', SC: 'Sul',
 };
 const REGIAO_ORDER = ['Norte', 'Nordeste', 'Centro-Oeste', 'Sudeste', 'Sul'];
+// produto pelo valor da venda: a partir de R$30 mil = PAV, abaixo = Acelerador
+const PAV_MIN_AMOUNT = 30000;
 
 function ufFromPhone(raw) {
   if (!raw) return null;
@@ -302,6 +304,7 @@ export default async function handler(req, res) {
     const regionAgg = {};             // regiao -> { count, amount }
     const creativeAgg = new Map();    // utm_content -> { content, camp, count, amount }
     let total = 0, amountTotal = 0, semRegiao = 0;
+    const byProduct = { pav: { count: 0, amount: 0 }, acelerador: { count: 0, amount: 0 }, semValor: 0 };
     let matched = 0, unmatched = 0;   // venda casada (ou não) com a planilha de captação
 
     for (const d of deals) {
@@ -313,6 +316,9 @@ export default async function handler(req, res) {
       const raw = Number(d.amount_total) || 0;
       const amt = raw > 0 && raw <= 300000 ? raw : 0;
       amountTotal += amt;
+      if (amt >= PAV_MIN_AMOUNT) { byProduct.pav.count += 1; byProduct.pav.amount += amt; }
+      else if (amt > 0) { byProduct.acelerador.count += 1; byProduct.acelerador.amount += amt; }
+      else byProduct.semValor += 1; // sem valor (ou valor absurdo) — não dá pra saber o produto
 
       // ---- casa a venda com o lead da planilha (telefone; e-mail como reserva) ----
       const pk = phoneKey(dealPhone(d));
@@ -408,6 +414,10 @@ export default async function handler(req, res) {
       salesAmountLabel: amountTotal ? brl(amountTotal) : '-',
       ticketMedioLabel: total ? brl(amountTotal / total) : '-',
       salesSemRegiao: semRegiao,
+      salesPav: { count: byProduct.pav.count, amount: Math.round(byProduct.pav.amount) },
+      salesAcelerador: { count: byProduct.acelerador.count, amount: Math.round(byProduct.acelerador.amount) },
+      salesSemValor: byProduct.semValor,
+      pavMinAmount: PAV_MIN_AMOUNT,
       salesByRegion,
       salesByState,
       salesByCreative,
