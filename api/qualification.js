@@ -21,7 +21,8 @@ const RD_PIPELINE_ID = process.env.RDSTATION_WEBINAR_PIPELINE_ID || '694aabf03f1
 const RD_BASE = 'https://crm.rdstation.com/api/v1';
 
 const APLIC_SHEET_ID = process.env.APLICACAO_SHEET_ID || '12-vMpjxquYpO7TgQBsXuvsPLUdDmZZtUvyt5ucC8OSo';
-const APLIC_SHEET_GID = process.env.APLICACAO_SHEET_GID || '';
+// aba "Form Responses" — a 1ª aba da planilha é um log da integração com o RD
+const APLIC_SHEET_GID = process.env.APLICACAO_SHEET_GID || '2083618177';
 const APLIC_CSV_URL = `https://docs.google.com/spreadsheets/d/${APLIC_SHEET_ID}/export?format=csv${APLIC_SHEET_GID ? `&gid=${APLIC_SHEET_GID}` : ''}`;
 
 const TIERS = ['desqualificado', 'semi', 'qualificado', 'ultra'];
@@ -144,6 +145,7 @@ export function computeQualification(csv) {
   const revCol = findCol(header, /faturamento/);
   const emailCol = findCol(header, /e-?mail/);
   const phoneCol = findCol(header, /telefone|whats/);
+  if (revCol < 0) throw new Error('coluna de faturamento não encontrada — a aba lida não é a de respostas do formulário');
 
   // Mesmo lead preenchendo a aplicação mais de uma vez conta 1 — fica a
   // resposta mais recente (identificado por e-mail, senão telefone).

@@ -259,7 +259,9 @@ const outOfWindow = (window, d) => !!(window && d && (d < window.start || d >= w
 
 // ---------- planilha de APLICAÇÃO (formulário de pré-reunião) ----------
 const APLIC_SHEET_ID = process.env.APLICACAO_SHEET_ID || '12-vMpjxquYpO7TgQBsXuvsPLUdDmZZtUvyt5ucC8OSo';
-const APLIC_SHEET_GID = process.env.APLICACAO_SHEET_GID || '';
+// aba "Form Responses" — a planilha também tem uma aba de log da integração
+// com o RD, então nunca dá pra confiar na 1ª aba
+const APLIC_SHEET_GID = process.env.APLICACAO_SHEET_GID || '2083618177';
 const APLIC_CSV_URL = `https://docs.google.com/spreadsheets/d/${APLIC_SHEET_ID}/export?format=csv${APLIC_SHEET_GID ? `&gid=${APLIC_SHEET_GID}` : ''}`;
 async function fetchApplications(window) {
   try {
@@ -272,9 +274,12 @@ async function fetchApplications(window) {
     } finally { clearTimeout(t); }
     if (!ok || ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(text)) return { ok: false, count: 0 };
     const rows = parseCSV(text).filter((r) => r.some((c) => (c || '').trim() !== ''));
-    const hi = rows.findIndex((r) => r.some((c) => /nome|name/i.test(c)));
-    const header = hi >= 0 ? rows[hi] : rows[0];
-    const dataRows = rows.slice((hi >= 0 ? hi : 0) + 1);
+    // cabeçalho do Forms: célula que começa com "Nome" (ex.: "Nome Completo").
+    // Sem ele é a aba errada (ex.: log) — melhor mostrar "-" do que contar lixo.
+    const hi = rows.findIndex((r) => r.some((c) => /^\s*nome\b/i.test(c || '')));
+    if (hi < 0) return { ok: false, count: 0 };
+    const header = rows[hi];
+    const dataRows = rows.slice(hi + 1);
     const col = (re) => header.findIndex((h) => re.test(h || ''));
     // 1ª coluna é o carimbo de data/hora do Forms (cabeçalho às vezes vem sem nome)
     let ciDate = col(/carimbo|data\/hora|timestamp/i);
